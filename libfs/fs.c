@@ -13,12 +13,15 @@
 #define FAT_EOC 0xFFFF
 #define MAX_FILENAME 16
 #define MAX_FILE_COUNT 128
+#define MAX_FD 32
+
 
 // glob
 static struct superblock *super = NULL;
 static uint16_t *fat = NULL;
 static struct root *rdir = NULL;
 static int mount = 0;
+static struct fd table[MAX_FD];
 
 // def block structures
 struct __attribute__((packed)) superblock {
@@ -40,6 +43,13 @@ struct __attribute__((packed)) FAT {
 
 struct __attribute__((packed)) root {
 	struct FAT ent[128];
+};
+
+// fd struct
+struct fd {
+    int open;
+    char filename[MAX_FILENAME];
+    size_t off;
 };
 
 int fs_mount(const char *disk)
@@ -297,5 +307,122 @@ int fs_ls(void)
         }
     }
 
+    return 0;
+}
+
+int fs_open(const char *filename)
+{
+    if (!mount) {
+        return -1;
+    }
+
+    if (!filename) {
+        return -1;
+    }
+
+    // check if exists
+    int exists = 0;
+    for (int i = 0; i < MAX_FILE_COUNT; i++) {
+        if (rdir->ent[i].fileName[0] != '\0' && 
+            strcmp((char*)rdir->ent[i].fileName, filename) == 0) {
+            exists = 1;
+            break;
+        }
+    }
+
+    if (!exists) {
+        return -1;
+    }
+
+    // find fd
+    int fd = -1;
+    for (int i = 0; i < MAX_FD; i++) {
+        if (!table[i].open) {
+            fd = i;
+            break;
+        }
+    }
+
+    if (fd == -1) {
+        return -1;
+    }
+
+    // init fd
+    table[fd].open = 1;
+    strcpy(table[fd].filename, filename);
+    table[fd].off = 0;
+
+    return fd;
+}
+
+int fs_close(int fd)
+{
+    if (!mount) {
+        return -1;
+    }
+
+    if (fd < 0 || fd >= MAX_FD || !table[fd].open) {
+        return -1;
+    }
+
+    // clear fd
+    table[fd].open = 0;
+    memset(table[fd].filename, 0, MAX_FILENAME);
+    table[fd].off = 0;
+
+    return 0;
+}
+
+int fs_stat(int fd)
+{
+    if (!mount) {
+        return -1;
+    }
+
+    if (fd < 0 || fd >= MAX_FD || !table[fd].open) {
+        return -1;
+    }
+
+    // find file in root
+    for (int i = 0; i < MAX_FILE_COUNT; i++) {
+        if (rdir->ent[i].fileName[0] != '\0' && 
+            strcmp((char*)rdir->ent[i].fileName, table[fd].filename) == 0) {
+            return rdir->ent[i].fileSize;
+        }
+    }
+
+    return -1;
+}
+
+int fs_lseek(int fd, size_t off)
+{
+    if (!mount) {
+        return -1;
+    }
+
+    if (fd < 0 || fd >= MAX_FD || !table[fd].open) {
+        return -1;
+    }
+
+    // Find the file in root directory to get file size
+    int size = -1;
+    for (int i = 0; i < MAX_FILE_COUNT; i++) {
+        if (rdir->ent[i].fileName[0] != '\0' && 
+            strcmp((char*)rdir->ent[i].fileName, table[fd].filename) == 0) {
+            size = rdir->ent[i].fileSize;
+            break;
+        }
+    }
+
+    if (size == -1) {
+        return -1;
+    }
+
+    // check offset > size
+    if (off > (size_t)size) {
+        return -1;
+    }
+
+    table[fd].off = off;
     return 0;
 }
