@@ -15,6 +15,12 @@
 #define MAX_FILE_COUNT 128
 #define MAX_FD 32
 
+// fd struct
+struct fd {
+    int open;
+    char filename[MAX_FILENAME];
+    size_t off;
+};
 
 // glob
 static struct superblock *super = NULL;
@@ -43,13 +49,6 @@ struct __attribute__((packed)) FAT {
 
 struct __attribute__((packed)) root {
 	struct FAT ent[128];
-};
-
-// fd struct
-struct fd {
-    int open;
-    char filename[MAX_FILENAME];
-    size_t off;
 };
 
 int fs_mount(const char *disk)
