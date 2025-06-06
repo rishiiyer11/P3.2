@@ -173,7 +173,7 @@ int fs_umount(void)
 
 int fs_info(void)
 {
-	if (!mount) {
+    if (!mount) {
         return -1;
     }
 
@@ -191,14 +191,14 @@ int fs_info(void)
         }
     }
 
-    // print info
-    printf("totBlckCnt=%d\n", super->totBlck);
-    printf("fatBlckCnt=%d\n", super->fatBlckCnt);
-    printf("rdirBlck=%d\n", super->rootInd);
-    printf("dataBlck=%d\n", super->dataBlckStart);
-    printf("dataBlckCnt=%d\n", super->dataBlckCnt);
-    printf("fat/free=%d/%d\n", free_blocks, super->dataBlckCnt);
-    printf("rdir/free=%d/%d\n", 128 - file_count, 128);
+    printf("FS Info:\n");
+    printf("total_blk_count=%d\n", super->totBlck);
+    printf("fat_blk_count=%d\n", super->fatBlckCnt);
+    printf("rdir_blk=%d\n", super->rootInd);
+    printf("data_blk=%d\n", super->dataBlckStart);
+    printf("data_blk_count=%d\n", super->dataBlckCnt);
+    printf("fat_free_ratio=%d/%d\n", free_blocks, super->dataBlckCnt);
+    printf("rdir_free_ratio=%d/%d\n", 128 - file_count, 128);
 
     return 0;
 }
