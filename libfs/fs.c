@@ -136,18 +136,22 @@ int fs_mount(const char *disk)
 
 int fs_umount(void)
 {
-	if (!mount) {
+    if (!mount) {
         return -1;
     }
+    
+    for (int i = 0; i < MAX_FD; i++) {
+        if (table[i].open) {
+            return -1; 
+        }
+    }
 
-    // write FAT to disk
     for (int i = 0; i < super->fatBlckCnt; i++) {
         if (block_write(i + 1, (uint8_t*)fat + i * BLOCK_SIZE) < 0) {
             return -1;
         }
     }
 
-    // write root to disk
     if (block_write(super->rootInd, rdir) < 0) {
         return -1;
     }
@@ -425,3 +429,239 @@ int fs_lseek(int fd, size_t off)
     table[fd].off = off;
     return 0;
 }
+
+static int find_data_block_for_offset(const char *filename, size_t offset) {
+    if (!mount || !filename) {
+        return -1;
+    }
+    
+    struct FAT *file_entry = NULL;
+    for (int i = 0; i < MAX_FILE_COUNT; i++) {
+        if (rdir->ent[i].fileName[0] != '\0' && 
+            strcmp((char*)rdir->ent[i].fileName, filename) == 0) {
+            file_entry = &rdir->ent[i];
+            break;
+        }
+    }
+    
+    if (!file_entry || file_entry->firstBlck == FAT_EOC) {
+        return -1;
+    }
+    
+    size_t target_block_num = offset / BLOCK_SIZE;
+    
+    uint16_t current_block = file_entry->firstBlck;
+    for (size_t i = 0; i < target_block_num; i++) {
+        if (current_block >= super->dataBlckCnt || fat[current_block] == FAT_EOC) {
+            return -1; 
+        }
+        current_block = fat[current_block];
+    }
+    
+    return current_block;
+}
+
+static int allocate_new_block(void) {
+    if (!mount) {
+        return -1;
+    }
+    
+    for (int i = 0; i < super->dataBlckCnt; i++) {
+        if (fat[i] == 0) {
+            fat[i] = FAT_EOC; 
+            return i;
+        }
+    }
+    
+    return -1; 
+}
+
+static int extend_file_chain(const char *filename) {
+    if (!mount || !filename) {
+        return -1;
+    }
+    
+    struct FAT *file_entry = NULL;
+    for (int i = 0; i < MAX_FILE_COUNT; i++) {
+        if (rdir->ent[i].fileName[0] != '\0' && 
+            strcmp((char*)rdir->ent[i].fileName, filename) == 0) {
+            file_entry = &rdir->ent[i];
+            break;
+        }
+    }
+    
+    if (!file_entry) {
+        return -1;
+    }
+    
+    int new_block = allocate_new_block();
+    if (new_block < 0) {
+        return -1; 
+    }
+    
+    if (file_entry->firstBlck == FAT_EOC) {
+        file_entry->firstBlck = new_block;
+        return new_block;
+    }
+    
+    uint16_t current_block = file_entry->firstBlck;
+    while (fat[current_block] != FAT_EOC) {
+        if (current_block >= super->dataBlckCnt) {
+            return -1; 
+        }
+        current_block = fat[current_block];
+    }
+    
+    fat[current_block] = new_block;
+    return new_block;
+}
+
+static struct FAT* get_file_entry(const char *filename) {
+    if (!mount || !filename) {
+        return NULL;
+    }
+    
+    for (int i = 0; i < MAX_FILE_COUNT; i++) {
+        if (rdir->ent[i].fileName[0] != '\0' && 
+            strcmp((char*)rdir->ent[i].fileName, filename) == 0) {
+            return &rdir->ent[i];
+        }
+    }
+    
+    return NULL;
+}
+
+int fs_read(int fd, void *buf, size_t count)
+{
+    if (!mount) {
+        return -1;
+    }
+    
+    if (fd < 0 || fd >= MAX_FD || !table[fd].open) {
+        return -1;
+    }
+    
+    if (!buf) {
+        return -1;
+    }
+    
+    struct FAT *file_entry = get_file_entry(table[fd].filename);
+    if (!file_entry) {
+        return -1;
+    }
+    
+    size_t file_size = file_entry->fileSize;
+    size_t offset = table[fd].off;
+    
+    if (offset >= file_size) {
+        return 0; 
+    }
+    
+    if (offset + count > file_size) {
+        count = file_size - offset;
+    }
+    
+    size_t bytes_read = 0;
+    uint8_t *user_buf = (uint8_t*)buf;
+    
+    while (bytes_read < count) {
+        int data_block_index = find_data_block_for_offset(table[fd].filename, 
+                                                         offset + bytes_read);
+        if (data_block_index < 0) {
+            break; 
+        }
+
+        int real_block = super->dataBlckStart + data_block_index;
+        
+        size_t block_offset = (offset + bytes_read) % BLOCK_SIZE;
+        
+        size_t bytes_in_block = BLOCK_SIZE - block_offset;
+        size_t bytes_to_read = (count - bytes_read < bytes_in_block) ? 
+                               count - bytes_read : bytes_in_block;
+        
+        uint8_t bounce_buffer[BLOCK_SIZE];
+        if (block_read(real_block, bounce_buffer) < 0) {
+            return -1;
+        }
+        
+        memcpy(user_buf + bytes_read, bounce_buffer + block_offset, bytes_to_read);
+        bytes_read += bytes_to_read;
+    }
+    
+    table[fd].off += bytes_read;
+    
+    return bytes_read;
+}
+
+int fs_write(int fd, void *buf, size_t count)
+{
+    if (!mount) {
+        return -1;
+    }
+    
+    if (fd < 0 || fd >= MAX_FD || !table[fd].open) {
+        return -1;
+    }
+    
+    if (!buf) {
+        return -1;
+    }
+    
+    struct FAT *file_entry = get_file_entry(table[fd].filename);
+    if (!file_entry) {
+        return -1;
+    }
+    
+    size_t offset = table[fd].off;
+    const uint8_t *user_buf = (const uint8_t*)buf;
+    size_t bytes_written = 0;
+    
+    while (bytes_written < count) {
+        size_t current_offset = offset + bytes_written;
+        size_t block_offset = current_offset % BLOCK_SIZE;
+        
+        int data_block_index = find_data_block_for_offset(table[fd].filename, current_offset);
+        if (data_block_index < 0) {
+            data_block_index = extend_file_chain(table[fd].filename);
+            if (data_block_index < 0) {
+                break;
+            }
+        }
+        
+        int real_block = super->dataBlckStart + data_block_index;
+        
+        size_t bytes_in_block = BLOCK_SIZE - block_offset;
+        size_t bytes_to_write = (count - bytes_written < bytes_in_block) ? 
+                                count - bytes_written : bytes_in_block;
+        
+        uint8_t bounce_buffer[BLOCK_SIZE];
+        
+        if (block_offset != 0 || bytes_to_write != BLOCK_SIZE) {
+            if (block_read(real_block, bounce_buffer) < 0) {
+                if (block_offset == 0) {
+                    memset(bounce_buffer, 0, BLOCK_SIZE);
+                } else {
+                    return -1;
+                }
+            }
+        }
+        
+        memcpy(bounce_buffer + block_offset, user_buf + bytes_written, bytes_to_write);
+        
+        if (block_write(real_block, bounce_buffer) < 0) {
+            return -1;
+        }
+        
+        bytes_written += bytes_to_write;
+        
+        size_t new_offset = offset + bytes_written;
+        if (new_offset > file_entry->fileSize) {
+            file_entry->fileSize = new_offset;
+        }
+    }
+    
+    table[fd].off += bytes_written;
+    
+    return bytes_written;
+}
+
